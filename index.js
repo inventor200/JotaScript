@@ -17,6 +17,12 @@ JT.output(JT.a_strloop(
     'hello world', 'x', JT.a_switch('%x', 'l', JT.a_print('Boo! '))
 ));
 
+JT.output(JT.a_let('foo', '%{bar}!',
+    JT.a_countloop(10, 'bar',
+        JT.a_print('%{foo}', ' ', '%{bar}')
+    )
+));
+
 const testContext = JT.createContext(inventor, inventor);
 /*JT.output(
     JT.a_print('hello ','world')
@@ -53,10 +59,10 @@ smartphone.init()
 //    , testContext
 //);
 smartphone._executeField(testContext, 'testfunc');
-console.log(
+/*console.log(
     smartphone._compileField('testfuncsrc') + '%;' +
     smartphone._compileField('testfunc')
-);
+);*/
 
 //
 
