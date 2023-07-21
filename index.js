@@ -23,7 +23,7 @@ console.log(
     booTest.compile(testContext, true)
 );
 
-const outerReferenceTest = JT.a_let('foo', '_',//'%{bar}!',
+const outerReferenceTest = JT.a_let('foo', '%{bar}!',
     JT.a_countloop(10, 'bar',
         JT.a_print('%{foo}', ' ', '%{bar}')
     )
@@ -45,7 +45,7 @@ console.log(
     JT.a_print('hello ','world')
 );*/
 smartphone.init()
-/*.registerArray('testarray', true,
+.registerArray('testarray', true,
     3, 5, 7, 9
 )
 .setField('testfuncsrc', JT.createSequence(
@@ -56,8 +56,8 @@ smartphone.init()
         JT.a_tell(inventor.dbref, '%v ')
     )
 ))
-.setField('testfunc', JT.do('testfuncsrc'));*/
-.setField('testfunc', JT.a_strcheck('', '', 8, '%#', '%#'));
+.setField('testfunc', JT.do('testfuncsrc'));
+//.setField('testfunc', JT.a_strcheck('', '', 8, '%#', '%#'));
 /*inventor.init().setField('testfunc', JT.a_execute(JT.createSequence(
     JT.a_print('hello '),
     JT.a_print('world')
@@ -78,7 +78,7 @@ smartphone.init()
 //);
 smartphone.outputField(testContext, 'testfunc');
 console.log(
-    //smartphone._compileField('testfuncsrc') + '%;' +
+    smartphone._compileField(testContext, 'testfuncsrc') + '%;' +
     smartphone._compileField(testContext, 'testfunc')
 );
 
