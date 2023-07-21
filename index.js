@@ -28,7 +28,7 @@ const testContext = JT.createContext(inventor, inventor);
     JT.a_print('hello ','world')
 );*/
 smartphone.init()
-.registerArray('testarray', true,
+/*.registerArray('testarray', true,
     3, 5, 7, 9
 )
 .setField('testfuncsrc', JT.createSequence(
@@ -39,7 +39,8 @@ smartphone.init()
         JT.a_tell(inventor.dbref, '%v ')
     )
 ))
-.setField('testfunc', JT.do('testfuncsrc'));
+.setField('testfunc', JT.do('testfuncsrc'));*/
+.setField('testfunc', JT.a_strlen(JT.a_substitute(JT.a_print('%%','#'))));
 /*inventor.init().setField('testfunc', JT.a_execute(JT.createSequence(
     JT.a_print('hello '),
     JT.a_print('world')
@@ -58,7 +59,7 @@ smartphone.init()
 //    JT.a_print('hello ','world')
 //    , testContext
 //);
-smartphone._executeField(testContext, 'testfunc');
+smartphone.outputField(testContext, 'testfunc');
 /*console.log(
     smartphone._compileField('testfuncsrc') + '%;' +
     smartphone._compileField('testfunc')
