@@ -23,7 +23,7 @@ console.log(
     booTest.compile(testContext, true)
 );
 
-const outerReferenceTest = JT.a_let('foo', '%{bar}!',
+const outerReferenceTest = JT.a_let('foo', '_',//'%{bar}!',
     JT.a_countloop(10, 'bar',
         JT.a_print('%{foo}', ' ', '%{bar}')
     )
@@ -31,6 +31,14 @@ const outerReferenceTest = JT.a_let('foo', '%{bar}!',
 JT.output(outerReferenceTest);
 console.log(
     outerReferenceTest.compile(testContext, true)
+);
+
+const mixedSubstitutionTest = JT.a_let('foo', JT.a_print('Heck'),
+    JT.a_print('%{foo} yeah!')
+);
+JT.output(mixedSubstitutionTest);
+console.log(
+    mixedSubstitutionTest.compile(testContext, true)
 );
 
 /*JT.output(
