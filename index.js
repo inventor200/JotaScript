@@ -4,6 +4,8 @@ const inventor = JT.registerPlayer('inventor', 29923);
 const gameCodeRoom = JT.registerRoom('Game Code Room', 29976, inventor);
 const smartphone = JT.registerThing('smartphone', 29926, inventor, gameCodeRoom);
 
+const testContext = JT.createContext(inventor, inventor);
+
 //const innerField = JT.a_switch(7, 7, 4, "wut");
 //const field = JT.a_switch(innerField, 4, "foo%cbar", "bar");
 
@@ -13,17 +15,24 @@ const smartphone = JT.registerThing('smartphone', 29926, inventor, gameCodeRoom)
 //console.log(JT.output(innerField));
 //JT.output(JT.a_switch(JT.a_print('a', 'b'), 'ab', 'yes', 'no'));
 
-JT.output(JT.a_strloop(
-    'hello world', 'x', JT.a_switch('%x', 'l', JT.a_print('Boo! '))
-));
+const booTest = JT.a_strloop(
+    'hello world', 'x', JT.a_switch('%x', 'l', JT.a_print('Boo! '), '')
+);
+JT.output(booTest);
+console.log(
+    booTest.compile(testContext, true)
+);
 
-JT.output(JT.a_let('foo', '%{bar}!',
+const outerReferenceTest = JT.a_let('foo', '%{bar}!',
     JT.a_countloop(10, 'bar',
         JT.a_print('%{foo}', ' ', '%{bar}')
     )
-));
+);
+JT.output(outerReferenceTest);
+console.log(
+    outerReferenceTest.compile(testContext, true)
+);
 
-const testContext = JT.createContext(inventor, inventor);
 /*JT.output(
     JT.a_print('hello ','world')
 );*/
@@ -40,7 +49,7 @@ smartphone.init()
     )
 ))
 .setField('testfunc', JT.do('testfuncsrc'));*/
-.setField('testfunc', JT.a_strlen(JT.a_substitute(JT.a_print('b','78'))));
+.setField('testfunc', JT.a_strcheck('', '', 8, '%#', '%#'));
 /*inventor.init().setField('testfunc', JT.a_execute(JT.createSequence(
     JT.a_print('hello '),
     JT.a_print('world')
