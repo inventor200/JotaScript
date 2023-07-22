@@ -184,11 +184,8 @@ function isStaticArg(arg, ignoredSubstitutions=[]) {
 
 // JotaCode enforces all lower-case spelling for programs, flags, and fields.
 function enforceFieldNameCapitalization(fieldName) {
-    fieldName = String(fieldName).toLowerCase();
-    if (fieldName.indexOf(' ') > -1) {
-        throw new Error("Field names cannot have spaces!");
-    }
-    return fieldName;
+    const spaceRegEx = /\s/g;
+    return String(fieldName).trim().replace(spaceRegEx, '').toLowerCase();
 }
 
 function compileContent(context, content, skipQuotes=false) {
@@ -3065,13 +3062,10 @@ class JotaBridge {
 
             const subProgram = args[args.length - 1];
 
-            //const proto = reduceData(context, subProgram);
-
             const pairs = [];
             for (let i = 0; i < args.length - 1; i += 2) {
                 const pair = {
                     key: '%' + String(reduceArg(context, args[i])),
-                    //value: String(reduceData(context, args[i+1]))
                     value: args[i+1]
                 };
                 pairs.push(pair);
