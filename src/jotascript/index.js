@@ -1,5 +1,7 @@
 const prompt = require('prompt-sync')({sigint: true});
 
+const nowheredbref = -3;
+
 function convertData(obj) {
     if (obj === null || obj === undefined) {
         return "";
@@ -461,6 +463,7 @@ class DatabaseObject {
         this.constants = [];
         this.fields = [];
         this.arrays = [];
+        this.customActions = [];
         this.isObject = false;
         this.isPlayer = false;
         this.isRoom = false;
@@ -673,6 +676,13 @@ class DatabaseObject {
         );
     }
 
+    registerAction(vocab) {
+        throw new Error(
+            "Cannot set action '" + vocab + "' on " +
+            this._getShortName() + " outside of init() pipeline!"
+        );
+    }
+
     getArray(arrayName, indexProgram) {
         arrayName = enforceFieldNameCapitalization(arrayName);
         const currentArray = this._getArrayByName(arrayName);
@@ -828,12 +838,20 @@ class DatabaseObject {
             }
         }
     }
+
+    finishAction() {
+        throw new Error(
+            "Cannot finish action outside of an action's init() pipe!"
+        );
+    }
 }
 
 class ObjectInitializer {
     constructor(parent) {
         this.parent = parent;
         this.parent.bridge.localScope = this.parent;
+        this.parentInit = undefined;
+        this.isActionInit = false;
     }
 
     setField(fieldName, value) {
@@ -887,6 +905,34 @@ class ObjectInitializer {
         ));
         return this;
     }
+
+    registerAction(vocab, dbref) {
+        const customAction = new Exit(
+            this.parent.bridge,
+            vocab, dbref,
+            this.parent.owner, this.parent
+        );
+        this.parent.customActions.push(customAction);
+        const nestedInit = customAction.init();
+        nestedInit.parentInit = this;
+        nestedInit.isActionInit = true;
+        return nestedInit;
+    }
+
+    setDest(destination) {
+        this.parent._setField('link', enforceDBRef(destination));
+        return this;
+    }
+
+    finishAction() {
+        if (!this.isActionInit) {
+            throw new Error(
+                "Cannot finish action outside of an action's init() pipe!"
+            );
+        }
+        this.parent.bridge.localScope = this.parentInit.parent;
+        return this.parentInit
+    }
 }
 
 class Ownable extends DatabaseObject {
@@ -919,6 +965,8 @@ class Thing extends Locatable {
         super(bridge, 4, vocab, dbref, owner, location);
         this.owner = owner;
         this.isObject = true;
+        this._setField('eat', "That would not be a safe idea...");
+        this._setField('oeat', "hungrily eyes the " + this._getShortName() + "...");
     }
 }
 
@@ -926,6 +974,7 @@ class Exit extends Locatable {
     constructor(bridge, vocab, dbref, owner, location=null) {
         super(bridge, 3, vocab, dbref, owner, location);
         this.isExit = true;
+        this._setField('link', nowheredbref);
     }
 
     // Object-oriented alternatives to program-building:
@@ -934,7 +983,15 @@ class Exit extends Locatable {
     }
 
     createDest(destination) {
-        createField('link', enforceDBRef(destination));
+        this._setField('link', enforceDBRef(destination));
+    }
+
+    goesNowhere() {
+        const field = this._getField('link');
+        return (
+            field && field.value &&
+            !field.value.isProgram && field.value === nowheredbref
+        );
     }
 }
 
@@ -1090,18 +1147,18 @@ class JotaBridge {
         this.registeredSubstitutions = [];
 
         this.adminPlayer = new Player(
-            this, 'admin player', -2, null
+            this, 'admin player', -100, null
         );
         this.registeredObjects.push(this.adminPlayer);
 
         this.nowhere = new Room(
-            this, 'nowhere', -3, this.adminPlayer
+            this, 'nowhere', nowheredbref, this.adminPlayer
         );
         this.registeredObjects.push(this.nowhere);
         this.adminPlayer.location = this.nowhere;
 
         this.outputItem = new Thing(
-            this, 'output item', -1, this.adminPlayer, this.nowhere
+            this, 'output item', -150, this.adminPlayer, this.nowhere
         );
         this.registeredObjects.push(this.outputItem);
         this.outputItem._setField('run', "Hello world!");
@@ -3134,9 +3191,12 @@ class JotaBridge {
         for (let i = 0; i < this.registeredObjects.length; i++) {
             const obj = this.registeredObjects[i];
             if (obj.dbref <= 0) continue;
-            res += '\n\n# ' + obj._getShortName() + ' (#' + obj.dbref + ')\n';
+            res += '\n\n# ' + obj._getShortName() + ' (#' + obj.dbref + ')';
             if (obj.isPlayer) continue;
-            res += this.wrapSemicolons('@create ' + obj.vocab, wrappedSemicolon);
+            res += this.wrapSemicolons('\n@create ' + obj.vocab, wrappedSemicolon);
+            if (!obj.isRoom && obj.location && obj.location.dbref != nowheredbref) {
+                res += '\n@teleport #' + obj.dbref + ' = #' + obj.location.dbref
+            }
             if (obj.flags.length + obj.fields.length > 0) {
                 res += '\n';
             }
@@ -3179,6 +3239,8 @@ class JotaBridge {
     }
 
     runEmulator() {
+        const verblist = this.createStandardVerbList();
+
         console.log(
             'Use...' +
             '\n    $playername' +
@@ -3231,11 +3293,134 @@ class JotaBridge {
                 console.log('You need to control a player character first.');
             }
             else {
-                //
+                //TODO: Match exit first, then verb
+
+                // Exits
+
+                for (let i = 0; i < verblist.length; i++) {
+                    const verb = verblist[i];
+                    if (verb.matches(playerInput) > -1) {
+                        verb.handle(currentAgent, playerInput);
+                        break;
+                    }
+                }
             }
         } while(playerInput != 'quit');
 
         console.log('# EMULATOR HAS CLOSED.\n');
+    }
+
+    matchPhraseToObject(agent, phrase) {
+        const lowerPhrase = phrase.toLowerCase();
+        let agentTopLoc = agent.location;
+        while (agentTopLoc && !agentTopLoc.isRoom) {
+            agentTopLoc = agentTopLoc.location;
+        }
+        let bestMatch = undefined;
+        let bestDegree = 10000;
+        for (let i = 0; i < this.registeredObjects.length; i++) {
+            const obj = this.registeredObjects[i];
+            let objTopLoc = obj.location;
+            while (objTopLoc && !objTopLoc.isRoom) {
+                objTopLoc = objTopLoc.location;
+            }
+            if (agentTopLoc != objTopLoc) continue;
+            const vocabs = obj.vocab.split(';');
+            for (let j = 0; j < vocabs.length; j++) {
+                const vocab = vocabs[j];
+                if (vocab.indexOf(lowerPhrase) === -1) continue;
+                const matchDegree = vocab.length - lowerPhrase.length;
+                if (matchDegree < bestDegree) {
+                    bestMatch = obj;
+                    bestDegree = matchDegree;
+                }
+            }
+        }
+        return bestMatch;
+    }
+
+    createStandardVerbList() {
+        const verblist = [];
+
+        verblist.push(new Verb(this,
+            [
+                'examine', 'x', 'look at', 'read'
+            ],
+            (agent, tokens, front, middle, end) => {
+                const obj = agent.bridge.matchPhraseToObject(agent, front);
+                if (obj === undefined) {
+                    console.log('You don\'t see that here.');
+                    return;
+                }
+
+                const desc = obj._getField('description');
+                if (desc && desc.length > 0) {
+                    console.log(desc);
+                    return;
+                }
+                console.log('You see nothing special about that.');
+            }
+        ));
+
+        verblist.sort((a, b) => {
+            return b.words[0].length - a.words[0].length;
+        });
+
+        return verblist;
+    }
+}
+
+class Verb {
+    constructor(bridge, words, doer) {
+        this.bridge = bridge;
+        this.words = [];
+        if (!Array.isArray(words)) {
+            words = [words];
+        }
+        for (let i = 0; i < words.length; i++) {
+            this.words.push(words[i].trim().toLowerCase());
+        }
+        this.words.sort((a, b) => b.length - a.length);
+        this.doer = doer;
+    }
+
+    matches(phrase) {
+        const lowered = phrase.trim().toLowerCase();
+        for (let i = 0; i < this.words.length; i++) {
+            const word = this.words[i];
+            if (
+                lowered.startsWith(word + ' ') || 
+                lowered === word
+            ) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    handle(agent, phrase) {
+        const match = this.words[this.matches(phrase)];
+        const tokens = (phrase.length === match.length ?
+            '' : phrase.substring(match.length).trim());
+        let front = tokens;
+        let middle = '';
+        let end = '';
+        if (tokens.length > 0) {
+            if (tokens.indexOf('=') > -1) {
+                const firstSplit = tokens.split('=');
+                front = firstSplit[0].trim();
+                const secondFragment = firstSplit[1].trim();
+                if (secondFragment.indexOf(':')) {
+                    const secondSplit = secondFragment.split(':');
+                    middle = secondSplit[0].trim();
+                    end = secondSplit[1].trim();
+                }
+                else {
+                    middle = secondFragment;
+                }
+            }
+        }
+        this.doer(agent, tokens, front, middle, end);
     }
 }
 
