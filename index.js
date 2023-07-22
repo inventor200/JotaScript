@@ -77,10 +77,10 @@ smartphone.init()
 //    , testContext
 //);
 smartphone.outputField(testContext, 'testfunc');
-console.log(
+/*console.log(
     smartphone._compileField(testContext, 'testfuncsrc') + '%;' +
     smartphone._compileField(testContext, 'testfunc')
-);
+);*/
 
 //
 
@@ -163,3 +163,5 @@ numberCore.init().setField('altituderegister', 0)
 
 // STALEMATE CORE
 // ...
+
+JT.finish();

@@ -1,0 +1,11 @@
+{
+    "name": "jotascript",
+    "version": "1.0.0",
+    "description": "A testbed for JotaCode",
+    "main": "index.js",
+    "author": "Joseph Cramsey",
+    "license": "MIT",
+    "dependencies": {
+      "prompt-sync": "^4.2.0"
+    }
+  }

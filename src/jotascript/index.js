@@ -1,3 +1,5 @@
+const prompt = require('prompt-sync')({sigint: true});
+
 function convertData(obj) {
     if (obj === null || obj === undefined) {
         return "";
@@ -958,7 +960,7 @@ class ObjectField {
     }
 
     compile(context) {
-        let res = '@field ' + this.parent._getShortName() + '=' +
+        let res = '@field #' + String(this.parent.dbref) + '=' +
             this.fieldName + ':';
 
         if (this.value.isSequence) {
@@ -2977,6 +2979,75 @@ class JotaBridge {
 
             return "";
         }, args).evaluationStatic();
+    }
+
+    getCompilation(commandSeparator='%;', wrappedSemicolon=';') {
+        const testContext = this.createTestContext();
+        let res = '\n# COMPILATION RESULTS';
+        for (let i = 0; i < this.registeredObjects.length; i++) {
+            const obj = this.registeredObjects[i];
+            if (obj.dbref <= 0) continue;
+            res += '\n\n# ' + obj._getShortName() + ' (#' + obj.dbref + ')\n';
+            if (obj.isPlayer) continue;
+            res += this.wrapSemicolons('@create ' + obj.vocab, wrappedSemicolon);
+            if (obj.flags.length + obj.fields.length > 0) {
+                res += '\n';
+            }
+
+            for (let j = 0; j < obj.flags.length; j++) {
+                const flag = obj.flags[j];
+                res += '@set #' + String(obj.dbref) + '=' + flag;
+            }
+
+            if (obj.flags.length > 0) res += '\n';
+
+            for (let j = 0; j < obj.fields.length; j++) {
+                const field = obj.fields[j];
+                if (j > 0) res += commandSeparator;
+                res += this.wrapSemicolons(
+                    field.compile(testContext), wrappedSemicolon
+                );
+            }
+        }
+
+        return res;
+    }
+
+    wrapSemicolons(str, wrappedSemicolon) {
+        if (wrappedSemicolon === ';') return str;
+        const semicolonRegEx = /;/g;
+        return str.replace(semicolonRegEx, wrappedSemicolon);
+    }
+
+    finish(runResult=true,commandSeparator='%;', wrappedSemicolon=';') {
+        console.log(this.getCompilation(commandSeparator, wrappedSemicolon));
+
+        if (runResult) {
+            console.log('\n# EMULATOR RUNNING...\n');
+            this.runEmulator();
+        }
+    }
+
+    runEmulator() {
+        console.log(
+            'Use...' +
+            '\n    $playername' +
+            '\n...to take control of a player character.' +
+            '\nPlayer characters available:'
+        );
+        for (let i = 0; i < this.registeredObjects.length; i++) {
+            const player = this.registeredObjects[i];
+            if (!player.isPlayer) continue;
+            console.log('    ' + player._getShortName());
+        }
+        console.log('');
+        let playerInput = '';
+
+        do {
+            playerInput = prompt('> ').trim().toLowerCase();
+        } while(playerInput != 'quit');
+
+        console.log('\n# EMULATOR HAS CLOSED.\n');
     }
 }
 
