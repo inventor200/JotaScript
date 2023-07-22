@@ -43,6 +43,12 @@ function forceNumber(obj) {
     return converted;
 }
 
+function isBool(obj) {
+    if (obj == 0) return true;
+    if (obj == 1) return true;
+    return false;
+}
+
 function forceBool(obj) {
     const converted = forceNumber(obj);
     if (converted < 0 || converted > 1) {
@@ -165,7 +171,7 @@ function isStaticArg(arg, ignoredSubstitutions=[]) {
     // allow simplification. In this case, we NEED TO AVOID
     // the branch of this if-statement, because it will
     // otherwise clear the no-return status and eliminate data.
-    if (arg.isProgram && !arg.hasNoReturn) {
+    if (arg.isProgram && !arg.doNotOptimize) {
         if (ignoredSubstitutions.length > 0) {
             // If we are being told to ignore certain substitution keys
             // this time around, then we need to re-evaluate.
@@ -356,7 +362,7 @@ class Program {
         this.depth = 0;
         this.deepens = false;
         this.isStatic = false;
-        this.hasNoReturn = true;
+        this.doNotOptimize = true;
         this.specializedDeterminer = undefined;
         this.specializedTransformer = undefined;
     }
@@ -370,7 +376,7 @@ class Program {
 
     // Usually piped off the end of loop declarations
     evaluationStatic(specializedDeterminer, ignoredSubstitutions=[]) {
-        this.hasNoReturn = false;
+        this.doNotOptimize = false;
         this.specializedDeterminer = specializedDeterminer;
         const argArray = this.simplifyArgArray(this.args);
         this.isStatic = true;
@@ -383,7 +389,7 @@ class Program {
                         args: argArray,
                         ignoredSubstitutions: ignoredSubstitutions
                     });
-                    if (suggestedTransformer) {
+                    if (suggestedTransformer != undefined) {
                         this.specializedTransformer = suggestedTransformer;
                         return this;
                     }
@@ -416,7 +422,7 @@ class Program {
     compile(context, skipQuotes=false) {
         const argArray = this.simplifyArgArray(this.args);
         if (this.isStatic) {
-            if (this.specializedTransformer) {
+            if (this.specializedTransformer != undefined) {
                 return compileContent(
                     context,
                     this.specializedTransformer,
@@ -455,6 +461,7 @@ class DatabaseObject {
         this.vocab = vocab;
         this.dbref = dbref;
         this.flags = [];
+        this.constants = [];
         this.fields = [];
         this.arrays = [];
         this.isObject = false;
@@ -515,8 +522,46 @@ class DatabaseObject {
      * For internal use only
      * @private
      */
+    throwOverwriteConstantError(fieldName) {
+        throw new Error(
+            "Cannot set a new value to constant \"" + fieldName +
+            "\" on " + this._getShortName() + "!"
+        );
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
+    _setConstant(fieldName, value) {
+        fieldName = enforceFieldNameCapitalization(fieldName);
+        for (let i = 0; i < this.constants.length; i++) {
+            const field = this.constants[i];
+            if (field.fieldName === fieldName) {
+                throwOverwriteConstantError(fieldName);
+            }
+        }
+        for (let i = 0; i < this.fields.length; i++) {
+            const field = this.fields[i];
+            if (field.fieldName === fieldName) {
+                throwOverwriteConstantError(fieldName);
+            }
+        }
+        this.constants.push(new ObjectField(this, fieldName, value));
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
     _setField(fieldName, value) {
         fieldName = enforceFieldNameCapitalization(fieldName);
+        for (let i = 0; i < this.constants.length; i++) {
+            const field = this.constants[i];
+            if (field.fieldName === fieldName) {
+                throwOverwriteConstantError(fieldName);
+            }
+        }
         for (let i = 0; i < this.fields.length; i++) {
             const field = this.fields[i];
             if (field.fieldName === fieldName) {
@@ -624,6 +669,13 @@ class DatabaseObject {
         );
     }
 
+    setConstant(fieldName) {
+        throw new Error(
+            "Cannot set constant '" + fieldName + "' on " +
+            this._getShortName() + " outside of init() pipeline!"
+        );
+    }
+
     getArray(arrayName, indexProgram) {
         arrayName = enforceFieldNameCapitalization(arrayName);
         const currentArray = this._getArrayByName(arrayName);
@@ -672,6 +724,14 @@ class DatabaseObject {
 
     getField(fieldName) {
         fieldName = enforceFieldNameCapitalization(fieldName);
+        // If it's a constant, then just send the value directly.
+        for (let i = 0; i < this.constants.length; i++) {
+            const field = this.constants[i];
+            if (field.fieldName === fieldName) {
+                return field.value;
+            }
+        }
+        // Otherwise send an execute-wrapped getfield program.
         return this.bridge.a_execute(this.cloneField(fieldName));
     }
 
@@ -783,6 +843,13 @@ class ObjectInitializer {
         this.parent.arraysAllowed = false;
         fieldName = enforceFieldNameCapitalization(fieldName);
         this.parent._setField(fieldName, value);
+        return this;
+    }
+
+    setConstant(fieldName, value) {
+        this.parent.arraysAllowed = false;
+        fieldName = enforceFieldNameCapitalization(fieldName);
+        this.parent._setConstant(fieldName, value);
         return this;
     }
 
@@ -1147,6 +1214,12 @@ class JotaBridge {
     }
 
     // Shorthand for init() declarations
+    get(fieldName) {
+        this.checkLocalScope();
+        return this.localScope.getField(fieldName);
+    }
+
+    // Shorthand for init() declarations
     set(fieldName, value) {
         this.checkLocalScope();
         return this.localScope.setField(fieldName, value);
@@ -1505,6 +1578,22 @@ class JotaBridge {
             
             return undefined;
         });
+    }
+
+    a_if(evalProgram, yesBranch, noBranch) {
+        return this.a_switch(
+            evalProgram,
+            0, noBranch,
+            yesBranch
+        );
+    }
+
+    a_exists(evalProgram, yesBranch, noBranch) {
+        return this.a_if(
+            this.a_gt(evalProgram, -1),
+            yesBranch,
+            noBranch
+        );
     }
 
     a_strcheck(...args) {
@@ -2531,7 +2620,7 @@ class JotaBridge {
         return this.a_type(...args);
     }
 
-    a_eq(...args) { //TODO: Make a specialized determiner for early failures
+    a_eq(...args) {
         return new Program('@eq', (context, args) => {
             args = toArgArray(context, args);
             if (args.length < 2) {
@@ -2546,7 +2635,25 @@ class JotaBridge {
             }
 
             return 1;
-        }, args).evaluationStatic();
+        }, args).evaluationStatic(({args, ignoredSubstitutions}) => {
+            const testContext = this.createTestContext();
+
+            // Early static failure
+            if (isStaticArg(args[0], ignoredSubstitutions)) {
+                const preview = String(reduceData(testContext, args[0]));
+                for (let i = 1; i < args.length; i++) {
+                    if (!isStaticArg(args[i], ignoredSubstitutions)) {
+                        return undefined;
+                    }
+                    const argPreview = String(reduceData(testContext, args[i]));
+                    if (preview != argPreview) {
+                        return 0;
+                    }
+                }
+            }
+            
+            return undefined;
+        });
     }
 
     a_lt(...args) {
@@ -2577,7 +2684,7 @@ class JotaBridge {
         }, args).evaluationStatic();
     }
 
-    a_and(...args) { //TODO: Make a specialized determiner for early failures
+    a_and(...args) {
         return new Program('@and', (context, args) => {
             args = toArgArray(context, args);
             if (args.length === 0) {
@@ -2590,10 +2697,33 @@ class JotaBridge {
             }
 
             return 1;
-        }, args).evaluationStatic();
+        }, args).evaluationStatic(({args, ignoredSubstitutions}) => {
+            const testContext = this.createTestContext();
+
+            // Early static failure
+            if (isStaticArg(args[0], ignoredSubstitutions)) {
+                const rawPreview = reduceArg(testContext, args[0]);
+                if (!isBool(rawPreview)) return undefined;
+                const preview = forceBool(rawPreview);
+                if (preview === 0) return 0;
+                for (let i = 1; i < args.length; i++) {
+                    if (!isStaticArg(args[i], ignoredSubstitutions)) {
+                        return undefined;
+                    }
+                    const rawArgPreview = reduceArg(testContext, args[i]);
+                    if (!isBool(rawArgPreview)) return undefined;
+                    const argPreview = forceBool(rawArgPreview);
+                    if (argPreview === 0) {
+                        return 0;
+                    }
+                }
+            }
+            
+            return undefined;
+        });
     }
 
-    a_or(...args) { //TODO: Make a specialized determiner for early successes
+    a_or(...args) {
         return new Program('@or', (context, args) => {
             args = toArgArray(context, args);
             if (args.length === 0) {
@@ -2606,7 +2736,30 @@ class JotaBridge {
             }
 
             return 0;
-        }, args).evaluationStatic();
+        }, args).evaluationStatic(({args, ignoredSubstitutions}) => {
+            const testContext = this.createTestContext();
+
+            // Early static success
+            if (isStaticArg(args[0], ignoredSubstitutions)) {
+                const rawPreview = reduceArg(testContext, args[0]);
+                if (!isBool(rawPreview)) return undefined;
+                const preview = forceBool(rawPreview);
+                if (preview === 1) return 1;
+                for (let i = 1; i < args.length; i++) {
+                    if (!isStaticArg(args[i], ignoredSubstitutions)) {
+                        return undefined;
+                    }
+                    const rawArgPreview = reduceArg(testContext, args[i]);
+                    if (!isBool(rawArgPreview)) return undefined;
+                    const argPreview = forceBool(rawArgPreview);
+                    if (argPreview === 1) {
+                        return 1;
+                    }
+                }
+            }
+            
+            return undefined;
+        });
     }
 
     a_not(...args) {
@@ -3019,7 +3172,10 @@ class JotaBridge {
         return str.replace(semicolonRegEx, wrappedSemicolon);
     }
 
-    finish(runResult=true,commandSeparator='%;', wrappedSemicolon=';') {
+    finish(runResult=true, condense=true, commandSeparator='%;', wrappedSemicolon=';') {
+        if (!condense) {
+            commandSeparator='\n';
+        }
         console.log(this.getCompilation(commandSeparator, wrappedSemicolon));
 
         if (runResult) {
@@ -3040,14 +3196,52 @@ class JotaBridge {
             if (!player.isPlayer) continue;
             console.log('    ' + player._getShortName());
         }
-        console.log('');
+
         let playerInput = '';
 
+        let currentAgent = null;
+
         do {
-            playerInput = prompt('> ').trim().toLowerCase();
+            const agentName = (currentAgent ?
+                currentAgent._getShortName() : '(untethered)');
+            console.log('');
+            playerInput = prompt(agentName + '> ').trim().toLowerCase();
+            console.log('');
+
+            if (playerInput.startsWith('$')) {
+                const nextAgentName = playerInput.substring(1);
+                let agentFound = false;
+
+                for (let i = 0; i < this.registeredObjects.length; i++) {
+                    const player = this.registeredObjects[i];
+                    if (!player.isPlayer) continue;
+                    const playerName = player._getShortName();
+                    if (playerName.toLowerCase() != nextAgentName) continue;
+                    currentAgent = player;
+                    console.log('Switching to ' + playerName + '...');
+                    agentFound = true;
+                    break;
+                }
+
+                if (!agentFound) {
+                    console.log(
+                        'No player character found with name "' +
+                        nextAgentName + '"'
+                    );
+                }
+            }
+            else if (playerInput === 'quit') {
+                break;
+            }
+            else if (!currentAgent) {
+                console.log('You need to control a player character first.');
+            }
+            else {
+                //
+            }
         } while(playerInput != 'quit');
 
-        console.log('\n# EMULATOR HAS CLOSED.\n');
+        console.log('# EMULATOR HAS CLOSED.\n');
     }
 }
 

@@ -95,66 +95,51 @@ const stalemateCore = JT.registerThing(
 const numberCore = JT.registerThing(
     'number core', 29978, inventor, gameCodeRoom
 );
-// The index of the altitude used for some calculation
-numberCore.init().setField('altituderegister', 0)
+
+numberCore.init()
 // Altitude 3 (index 2) is in the cons
-.setField('incons', JT.a_switch(
-    JT.a_getfield(numberCore.dbref, 'altituderegister'),
-    2, 1,
-    0
-))
+.registerArray('incons', true,
+    0, 0, 1, 0, 0
+)
 // Power effect per altitude
-.setField('power', JT.a_switch(
-    JT.a_getfield(numberCore.dbref, 'altituderegister'),
-    0, -5,
-    1, -4,
-    2, -3,
-    3, -2,
-    -1
-))
+.registerArray('power', true,
+    -5, -4, -3, -2, -1
+)
 // Power given to launched missile at altitude
-.setField('firingbonus', JT.a_switch(
-    JT.a_getfield(numberCore.dbref, 'altituderegister'),
-    0, 2,
-    1, 4,
-    2, 6,
-    3, 8,
-    10
-))
-// Power given to missile from owner for each turn not-cold
-.setField('attackercrankpower', 1)
-// Base power given to launched missile
-.setField('missilebasepower', 2)
+.registerArray('firingbonus', true,
+    2, 4, 6, 8, 10
+)
 // Altitude as text
-.setField('designatedaltitude', JT.a_switch(
-    JT.a_getfield(numberCore.dbref, 'altituderegister'),
-    0, "5,000 feet",
-    1, "20,000 feet",
-    2, "35,000 feet",
-    3, "50,000 feet",
+.registerArray('designatedaltitude', true,
+    "5,000 feet",
+    "20,000 feet",
+    "35,000 feet",
+    "50,000 feet",
     "65,000 feet"
-))
+)
+// The index of the altitude used for some calculation
+// MAY BE UNNECESSARY NOW
+.setField('altituderegister', 0)
+// Power given to missile from owner for each turn not-cold
+.setConstant('attackercrankpower', 1)
+// Base power given to launched missile
+.setConstant('missilebasepower', 2)
 // Negative numbers indicate the Scramble Stage
 .setField('turncount', 2)
-.setField('engagementturn', 4)
-.setField('stalemateturn', 15)
-.setField('mergeturn', 25)
+.setConstant('engagementturn', 4)
+.setConstant('stalemateturn', 15)
+.setConstant('mergeturn', 25)
 .setField('turnsremaining', JT.a_sub(
-    25, JT.a_getfield(numberCore.dbref, 'turncount'))
-)
+    JT.get('mergeturn'),
+    JT.get('turncount')
+))
 // The dbref of the engagement core or stalemate core, based on stage
-.setField('designatedaltitude', JT.a_switch(
+.setField('combatcoredbref', JT.a_if(
     JT.a_lt(
-        JT.a_getfield(
-            numberCore.dbref,
-            'turncount'
-        ),
-        JT.a_getfield(
-            numberCore.dbref,
-            'stalemateturn'
-        )
+        JT.get('turncount'),
+        JT.get('stalemateturn')
     ),
-    1, engagementCore.dbref,
+    engagementCore.dbref,
     stalemateCore.dbref
 ));
 
@@ -164,4 +149,4 @@ numberCore.init().setField('altituderegister', 0)
 // STALEMATE CORE
 // ...
 
-JT.finish();
+JT.finish(false, false);
