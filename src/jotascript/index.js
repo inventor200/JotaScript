@@ -654,11 +654,84 @@ class DatabaseObject {
         }
     }
 
+    /**
+     * For internal use only
+     * @private
+     */
     showMissingArrayError(arrayName) {
         throw new Error(
             "No array '" + arrayName + "' on " +
             this._getShortName()
         );
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
+    passesLock(agent) {
+        //TODO: Implement lock rules
+        return true;
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
+    doFieldPair(context, pairName) {
+        pairName = enforceFieldNameCapitalization(pairName);
+
+        const hasOverride = this.doPairHalf(
+            context, this._getField(pairName), false
+        );
+        this.doPairHalf(context, this._getField('o' + pairName), true);
+
+        return hasOverride;
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
+    doPairHalf(context, fieldObj, isExternal) {
+        if (!fieldObj || String(fieldObj).length === 0) return false;
+
+        if (fieldObj.isSequence) {
+            for (let i = 0; i < fieldObj.programs.length; i++) {
+                this.doSinglePairHalf(
+                    context, fieldObj.programs[i], isExternal
+                );
+            }
+            return true;
+        }
+        this.doSinglePairHalf(context, fieldObj, isExternal);
+        return true;
+    }
+
+    /**
+     * For internal use only
+     * @private
+     */
+    doSinglePairHalf(context, fieldObj, isExternal) {
+        const output = fieldObj.getOutput(context);
+        if (String(output).length === "") return;
+
+        if (isExternal) {
+            let agentRoom = context.agent.location;
+            while (agentRoom && !agentRoom.isRoom) {
+                agentRoom = agentRoom.location;
+            }
+
+            for (let i = 0; i < this.bridge.registeredObjects.length; i++) {
+                const obj = this.bridge.registeredObjects[i];
+                if (!obj.isPlayer) continue;
+                if (obj === context.agent) continue;
+                obj.processMessage(output);
+            }
+        }
+        else {
+            context.agent.processMessage(output);
+        }
     }
 
     // Object-oriented alternatives to program-building:
@@ -1016,7 +1089,7 @@ class Room extends Ownable {
 
     // Object-oriented alternatives to program-building:
     getLocation() {
-        return this.dbref;
+        return nowheredbref;
     }
 
     getRoom() {
@@ -1035,6 +1108,9 @@ class Room extends Ownable {
 class ObjectField {
     constructor(parent, fieldName, startingValue="") {
         this.parent = parent;
+        if (fieldName === 'desc') fieldName = 'description';
+        if (fieldName === 'succ') fieldName = 'success';
+        if (fieldName === 'osucc') fieldName = 'osuccess';
         this.fieldName = fieldName;
         this.value = startingValue;
         if (this.value.isSequence) {
@@ -1081,8 +1157,37 @@ class ObjectField {
     }
 
     compile(context) {
-        let res = '@field #' + String(this.parent.dbref) + '=' +
-            this.fieldName + ':';
+        let res = '';
+        switch (this.fieldName) {
+            case 'description':
+                res = '@desc #' + String(this.parent.dbref) + '=';
+                break;
+            case 'success':
+                res = '@succ #' + String(this.parent.dbref) + '=';
+                break;
+            case 'osuccess':
+                res = '@osucc #' + String(this.parent.dbref) + '=';
+                break;
+            case 'fail':
+                res = '@fail #' + String(this.parent.dbref) + '=';
+                break;
+            case 'ofail':
+                res = '@ofail #' + String(this.parent.dbref) + '=';
+                break;
+            case 'drop':
+                res = '@drop #' + String(this.parent.dbref) + '=';
+                break;
+            case 'odrop':
+                res = '@odrop #' + String(this.parent.dbref) + '=';
+                break;
+            case 'lock':
+                res = '@lock #' + String(this.parent.dbref) + '=';
+                break;
+            default:
+                res = '@ofail #' + String(this.parent.dbref) +
+                    '=' + this.fieldName + ':';
+                break;
+        }
 
         if (this.value.isSequence) {
             const segments = [];
@@ -2417,7 +2522,7 @@ class JotaBridge {
                 reduceArg(context, args[0])
             );
 
-            while (!loc.isRoom) {
+            while (loc && !loc.isRoom) {
                 loc = loc.location;
             }
 
@@ -3193,7 +3298,13 @@ class JotaBridge {
             if (obj.dbref <= 0) continue;
             res += '\n\n# ' + obj._getShortName() + ' (#' + obj.dbref + ')';
             if (obj.isPlayer) continue;
-            res += this.wrapSemicolons('\n@create ' + obj.vocab, wrappedSemicolon);
+            res += this.wrapSemicolons(
+                '\n@' + (obj.isRoom ? 'dig' : (obj.isExit ?
+                        'open' : 'create'
+                    )
+                ) + ' ' + obj.vocab,
+                wrappedSemicolon
+            );
             if (!obj.isRoom && obj.location && obj.location.dbref != nowheredbref) {
                 res += '\n@teleport #' + obj.dbref + ' = #' + obj.location.dbref
             }
@@ -3257,6 +3368,8 @@ class JotaBridge {
 
         let currentAgent = null;
 
+        let seenInvalidCommandMsg = false;
+
         do {
             const agentName = (currentAgent ?
                 currentAgent._getShortName() : '(untethered)');
@@ -3274,8 +3387,10 @@ class JotaBridge {
                     const playerName = player._getShortName();
                     if (playerName.toLowerCase() != nextAgentName) continue;
                     currentAgent = player;
-                    console.log('Switching to ' + playerName + '...');
+                    console.log('Switching to ' + playerName + '...\n');
                     agentFound = true;
+
+                    this.doLookAround(currentAgent);
                     break;
                 }
 
@@ -3286,6 +3401,13 @@ class JotaBridge {
                     );
                 }
             }
+            else if (playerInput.startsWith('@')) {
+                console.log('Invalid command.');
+                if (!seenInvalidCommandMsg) {
+                    seenInvalidCommandMsg = true;
+                    this.showInvalidCommandMessage();
+                }
+            }
             else if (playerInput === 'quit') {
                 break;
             }
@@ -3293,6 +3415,7 @@ class JotaBridge {
                 console.log('You need to control a player character first.');
             }
             else {
+                let understood = false;
                 //TODO: Match exit first, then verb
 
                 // Exits
@@ -3301,13 +3424,34 @@ class JotaBridge {
                     const verb = verblist[i];
                     if (verb.matches(playerInput) > -1) {
                         verb.handle(currentAgent, playerInput);
+                        understood = true;
                         break;
                     }
+                }
+
+                if (!understood) {
+                    console.log('Invalid command.');
+                    if (!seenInvalidCommandMsg) {
+                        seenInvalidCommandMsg = true;
+                        this.showInvalidCommandMessage();
+                    }
+                }
+                else {
+                    //TODO: If puzzle inventory locks no longer match,
+                    // drop the objects.
                 }
             }
         } while(playerInput != 'quit');
 
         console.log('# EMULATOR HAS CLOSED.\n');
+    }
+
+    showInvalidCommandMessage() {
+        console.log(
+            'NOTE: This is not meant to be an exhaustive ' +
+            'recreation of ifMUD. Not all commands have ' +
+            'been implemented.'
+        );
     }
 
     matchPhraseToObject(agent, phrase) {
@@ -3356,9 +3500,120 @@ class JotaBridge {
                 const desc = obj._getField('description');
                 if (desc && desc.length > 0) {
                     console.log(desc);
+                }
+                else {
+                    console.log(
+                        'You see nothing special about ' +
+                        obj._getShortName() + '.'
+                    );
+                }
+
+                //TODO: List obvious actions
+            }
+        ));
+
+        verblist.push(new Verb(this,
+            [
+                'take', 'get', 'grab', 'hold'
+            ],
+            (agent, tokens, front, middle, end) => {
+                const obj = agent.bridge.matchPhraseToObject(agent, front);
+                if (obj === undefined) {
+                    console.log('You don\'t see that here.');
                     return;
                 }
-                console.log('You see nothing special about that.');
+
+                if (!obj.isObject) {
+                    console.log('You cannot take that.');
+                    return;
+                }
+
+                if (obj.location === agent) {
+                    console.log('You already have that.');
+                    return;
+                }
+
+                const context = agent.bridge.createContext(
+                    agent, obj
+                );
+
+                if (!obj.passesLock(agent)) {
+                    const hasResponse = obj.doFieldPair(context, 'fail');
+                    if (!hasResponse) {
+                        console.log('You cannot take that.');
+                    }
+                    return;
+                }
+                
+                const hasResponse = obj.doFieldPair(context, 'success');
+                if (!hasResponse) {
+                    console.log('You take ' + obj._getShortName() + '.');
+                }
+
+                obj.location = agent;
+            }
+        ));
+
+        verblist.push(new Verb(this,
+            [
+                'drop'
+            ],
+            (agent, tokens, front, middle, end) => {
+                const obj = agent.bridge.matchPhraseToObject(agent, front);
+                if (obj === undefined) {
+                    console.log('You don\'t see that here.');
+                    return;
+                }
+
+                if (obj.location != agent) {
+                    console.log('You are not holdling that.');
+                    return;
+                }
+
+                const context = agent.bridge.createContext(
+                    agent, obj
+                );
+                
+                const hasResponse = obj.doFieldPair(context, 'drop');
+                if (!hasResponse) {
+                    console.log('You drop ' + obj._getShortName() + '.');
+                }
+
+                obj.location = agent.location;
+            }
+        ));
+
+        verblist.push(new Verb(this,
+            [
+                'inventory', 'inv', 'i'
+            ],
+            (agent, tokens, front, middle, end) => {
+                let res = 'You are carrying ';
+
+                let listedFirst = true;
+                for (let i = 0; i < agent.bridge.registeredObjects.length; i++) {
+                    const obj = agent.bridge.registeredObjects[i];
+                    if (!obj.isObject) continue;
+                    if (obj.location != agent) continue;
+                    if (!listedFirst) res += ', ';
+                    listedFirst = false;
+                    res += obj._getShortName();
+                }
+
+                if (listedFirst) res += 'nothing';
+
+                res += '.';
+
+                console.log(res);
+            }
+        ));
+
+        verblist.push(new Verb(this,
+            [
+                'look around', 'look', 'l'
+            ],
+            (agent, tokens, front, middle, end) => {
+                agent.bridge.doLookAround(agent);
             }
         ));
 
@@ -3367,6 +3622,78 @@ class JotaBridge {
         });
 
         return verblist;
+    }
+
+    doLookAround(agent) {
+        console.log('//// ' + agent.location._getShortName());
+        const desc = agent.location._getField('description');
+        if (desc && desc.length > 0) {
+            console.log(desc);
+        }
+        else {
+            console.log(
+                'You see nothing special about ' +
+                agent.location._getShortName() + '.'
+            );
+        }
+
+        const playerList = [];
+        const objectList = [];
+        const exitList = [];
+
+        for (let i = 0; i < agent.bridge.registeredObjects.length; i++) {
+            const obj = agent.bridge.registeredObjects[i];
+            if (obj.location != agent.location) continue;
+            if (obj.isPlayer && obj != agent) playerList.push(obj);
+            else if (obj.isObject) objectList.push(obj);
+            else if (obj.isExit) exitList.push(obj);
+        }
+
+        console.log('');
+
+        if (playerList.length > 0) {
+            console.log(
+                'Players: ' +
+                this.createList(agent, playerList)
+            );
+        }
+
+        if (objectList.length > 0) {
+            console.log(
+                'You can see: ' +
+                this.createList(agent, playerList)
+            );
+        }
+
+        console.log(
+            'Exits: ' +
+            this.createList(agent, exitList, 'none')
+        );
+    }
+
+    createList(agent, objArr, blankResponse='') {
+        if (objArr.length === 0) return blankResponse;
+
+        let res = '';
+
+        let listedFirst = true;
+        for (let i = 0; i < objArr.length; i++) {
+            const obj = objArr[i];
+            if (!listedFirst) res += ', ';
+            listedFirst = false;
+            res += obj._getShortName();
+            if (obj.isExit) {
+                const exitto = obj._executeField(
+                    this.createContext(agent, obj),
+                    'exitto'
+                );
+                if (String(exitto.length) > 0) {
+                    res += ' (' + exitto + ')';
+                }
+            }
+        }
+
+        return res;
     }
 }
 
