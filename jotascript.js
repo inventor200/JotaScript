@@ -1562,6 +1562,16 @@ class JotaBridge {
         return true;
     }
 
+    processJotacodeString(jotacodeString) {
+        if (!this.isJotacodeString(jotacodeString)) {
+            return jotacodeString;
+        }
+
+        const trimmed = jotacodeString.trim();
+
+        return trimmed.substring(1, trimmed.length - 1);
+    }
+
     unpackJotacode(jotacodeString, encasementTracker, startLevel) {
         if (this.isJotacodeString(jotacodeString)) {
             return jotacodeString;
@@ -1624,6 +1634,14 @@ class JotaBridge {
                     i++;
                     continue;
                 }
+            }
+            else if (c === '\\' && i < jotacodeString.length - 1) {
+                // This escape survived, and now it's unnecessary
+                buffer =
+                    buffer.substring(0, buffer.length - 1) +
+                    jotacodeString[i+1];
+                i++;
+                continue;
             }
             else if (c === '(' || c === '{') {
                 if (level === startLevel && buffer.length > 0) {
@@ -1729,11 +1747,8 @@ class JotaBridge {
                 else if (chunk === '}') {
                     armSequence = false;
                 }
-                else if (this.isJotacodeString(chunk)) {
-                    programArguments.push(chunk.substring(1, chunk.length - 1));
-                }
                 else {
-                    programArguments.push(chunk);
+                    programArguments.push(this.processJotacodeString(chunk));
                 }
             }
             else {
@@ -1765,11 +1780,8 @@ class JotaBridge {
                 else if (chunk === '}') {
                     armSequence = false;
                 }
-                else if (this.isJotacodeString(chunk)) {
-                    rankedTree.push(chunk.substring(1, chunk.length - 1));
-                }
                 else {
-                    rankedTree.push(chunk);
+                    rankedTree.push(this.processJotacodeString(chunk));
                 }
             }
         }
@@ -2010,7 +2022,7 @@ class JotaBridge {
             for (let i = 0; i < args.length; i++) {
                 res += String(reduceArg(context, args[i]));
             }
-            return res;
+            return res.replace(/\\"/g, '"');
         }, args).evaluationStatic();
     }
 

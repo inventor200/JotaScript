@@ -48,6 +48,7 @@ smartphone.init()
 .registerArray('testarray', true,
     3, 5, 7, 9
 )
+.setConstant('constantval', 16)
 .setField('testfuncsrc', JT.createSequence(
     JT.a_print('hello '),
     JT.a_print('world '),
@@ -55,7 +56,8 @@ smartphone.init()
         'testarray',
         JT.a_tell(inventor.dbref, '%v ')
     ),
-    JT.a_print(JT.read('testarray', 1)) //testarray[1] -> 5
+    JT.a_print(JT.read('testarray', 1)), //testarray[1] -> 5
+    JT.a_print(JT.get('constantval'))
 ))
 .setField('testfunc', JT.do('testfuncsrc'));
 //.setField('testfunc', JT.a_strcheck('', '', 8, '%#', '%#'));
@@ -89,7 +91,7 @@ const parsedCode = JT.createFieldArchive(
 JT.output(parsedCode.jotascript);
 
 const combineTest = JT.a_countloop(5,"mx",
-    JT.a_execute(JT.a_print('@print("Hello ",', '"WORLD!!%{mx}")'))
+    JT.a_execute(JT.a_print('@print(\\"Hello \\",', '\\"WORLD!!%{mx} \\")'))
 );
 JT.output(combineTest);
 JT.postLog(
@@ -97,7 +99,7 @@ JT.postLog(
 );
 
 const feedbackTest = JT.a_countloop(5,"mx",JT.a_execute(JT.a_print(
-    "@countloop(%{mx},\"cx\",@print(\"%{cx}\"))"
+    '@countloop(%{mx}, \\"cx\\",@print(\\"%{cx}\\"))'
 )));
 JT.output(feedbackTest);
 JT.postLog(
@@ -106,6 +108,7 @@ JT.postLog(
 
 const legacyThing = JT.registerThing('legacy thing', 40000, inventor, apartment);
 legacyThing.init(true)
-.setField('testfuncsrc', '@print("oh hai.")');
+//NOTE: Non-compiled quote escapes need to be explicitly doubled-up!
+.setField('testfuncsrc', '@print("oh \\"hai.\\"")');
 
 JT.finish(false, false);
