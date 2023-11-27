@@ -262,7 +262,7 @@ class JotaArray {
         this.elements = elements;
 
         if (!isStatic) {
-            for (let i = 0; i < elements.lparsedength; i++) {
+            for (let i = 0; i < elements.length; i++) {
                 parent._setField(
                     this.getIndexFieldName(i), elements[i]
                 );

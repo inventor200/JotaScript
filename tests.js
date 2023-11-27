@@ -54,7 +54,8 @@ smartphone.init()
     JT.ls().fieldLoop(
         'testarray',
         JT.a_tell(inventor.dbref, '%v ')
-    )
+    ),
+    JT.a_print(JT.read('testarray', 1)) //testarray[1] -> 5
 ))
 .setField('testfunc', JT.do('testfuncsrc'));
 //.setField('testfunc', JT.a_strcheck('', '', 8, '%#', '%#'));
