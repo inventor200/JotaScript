@@ -1490,7 +1490,6 @@ class JotaBridge {
     }
 
     // Jotacode parsing
-    //TODO: We can use this to allow for procedural code execution
     createFieldArchive(jotacodeString) {
         const encasementTracker = {
             stack: [],
@@ -3707,13 +3706,12 @@ class JotaBridge {
         this.socket = null;
     }
 
-    networkFinish(lowerCompiledContent) {
+    networkFinish(runResult) {
         //TODO: Get a better compile formatter
         let bulkCompile = this.getCompilation('\n', ';');
-        if (lowerCompiledContent) {
-            //TODO: Attach compiled code that did not require jotascript
-            //      to bulkCompile.
-        }
+        //TODO: Attach compiled code that did not require jotascript
+        //      to bulkCompile.
+        //      We can just write non-compiled objects to jotascript.
         this.socket = io("http://localhost:4100");
         this.socket.on("connect", () => {
             this.socket.emit('selfIdentify', 'sim-client');
@@ -3725,21 +3723,32 @@ class JotaBridge {
         });
         this.socket.on("clientRequest", (msg) => {
             if (msg === 'getBackupMessages') {
-                this.readyToSendOverNetwork = true;
-                while (this.backupMessageQueue.length > 0) {
-                    this.postLog(this.backupMessageQueue.shift());
-                }
+                this.sendBackupMessages();
             }
             else if (msg === 'latestCompile') {
+                this.sendBackupMessages();
                 this.socket.emit('forwardToClient', {
                     header: 'latestCompile',
                     data: bulkCompile
                 });
             }
+            else if (msg === 'compileReceived') {
+                if (!runResult) {
+                    console.log('Compile is done, and no emultation is needed.');
+                    this.socket.disconnect();
+                }
+            }
             else if (msg === 'shutdown') {
                 this.socket.disconnect();
             }
         });
+    }
+
+    sendBackupMessages() {
+        this.readyToSendOverNetwork = true;
+        while (this.backupMessageQueue.length > 0) {
+            this.postLog(this.backupMessageQueue.shift());
+        }
     }
 
     finish(runResult=true, condense=true, commandSeparator='%;', wrappedSemicolon=';') {
