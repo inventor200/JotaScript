@@ -1,4 +1,5 @@
 const prompt = require('prompt-sync')({sigint: true});
+const { io } = require("socket.io-client");
 
 const nowheredbref = -3;
 
@@ -104,13 +105,13 @@ function filterExecutable(context, line) {
     // layers must be unpacked.
     if (line === undefined) return "";
 
-    if (Array.isArray(line) || (line.isSequence && !line.registeredInField)) {
-        throw new Error("Chained inner executions are forbidden.");
-    }
     if ((typeof line) === 'string') {
         if (line.startsWith('@')) {
-            context.bridge.throwTextCompilationNotImplemented();
+            line = context.bridge.createFieldArchive(line).jotascript;
         }
+    }
+    if (Array.isArray(line) || (line.isSequence && !line.registeredInField)) {
+        throw new Error("Chained inner executions are forbidden.");
     }
     return convertData(line);
 }
@@ -261,7 +262,7 @@ class JotaArray {
         this.elements = elements;
 
         if (!isStatic) {
-            for (let i = 0; i < elements.length; i++) {
+            for (let i = 0; i < elements.lparsedength; i++) {
                 parent._setField(
                     this.getIndexFieldName(i), elements[i]
                 );
@@ -470,6 +471,7 @@ class DatabaseObject {
         this.isExit = false;
         this.initializedSafely = false;
         this.arraysAllowed = true;
+        this.doNotCompile = false;
     }
 
     /**
@@ -481,7 +483,7 @@ class DatabaseObject {
         for (let i = 0; i < names.length; i++) {
             if (names[i] === str) return true;
         }
-        return false;
+        return false;doNotCompile
     }
 
     /**
@@ -640,7 +642,7 @@ class DatabaseObject {
      */
     checkInitState(propertyName, settingField=false) {
         if (!this.initializedSafely) {
-            console.log(
+            this.bridge.postLog(
                 'WARNING: ' + this._getShortName() +
                 ' has not initialized safely yet! ' +
                 'You should use this instead:\n\n    ' +
@@ -891,7 +893,8 @@ class DatabaseObject {
      * initialized values, and not just programs that will do
      * this during execution time.
      */
-    init() {
+    init(doNotCompile) {
+        this.doNotCompile = doNotCompile;
         this.initializedSafely = true;
         return new ObjectInitializer(this);
     }
@@ -928,6 +931,28 @@ class ObjectInitializer {
     }
 
     setField(fieldName, value) {
+        if (this.parent.doNotCompile) {
+            if (!value.isFieldArchive) {
+                const dataType = typeof value;
+                let forbiddenType = true;
+                switch (dataType) {
+                    case 'number':
+                    case 'string':
+                    case 'boolean':
+                        forbiddenType = false;
+                }
+                if (forbiddenType) {
+                    throw new Error(
+                        this.parent._getShortName() + " is marked as " +
+                        "doNotCompile, but its \"" + fieldName +
+                        "\" field value is not a jotacode string!"
+                    );
+                }
+                else {
+                    value = this.parent.bridge.createFieldArchive(value);
+                }
+            }
+        }
         this.parent.arraysAllowed = false;
         fieldName = enforceFieldNameCapitalization(fieldName);
         this.parent._setField(fieldName, value);
@@ -1022,7 +1047,7 @@ class Ownable extends DatabaseObject {
         ).replace(
             new RegExp('%%', 'g'), '%'
         );*/
-        console.log('[' + this._getShortName() + ' POV] ' + msg);
+        this.bridge.postLog('[' + this._getShortName() + ' POV] ' + msg);
     }
 }
 
@@ -1108,6 +1133,14 @@ class Room extends Ownable {
 class ObjectField {
     constructor(parent, fieldName, startingValue="") {
         this.parent = parent;
+        if (startingValue.isFieldArchive) {
+            // The incoming value will be a field archive
+            this.sourceCode = startingValue.jotacode;
+            startingValue = startingValue.jotascript;
+        }
+        else {
+            this.sourceCode = startingValue;
+        }
         if (fieldName === 'desc') fieldName = 'description';
         if (fieldName === 'succ') fieldName = 'success';
         if (fieldName === 'osucc') fieldName = 'osuccess';
@@ -1123,7 +1156,7 @@ class ObjectField {
         if (Array.isArray(this.value)) {
             throw new Error("Use a Sequence instead of an array");
         }
-        //console.log(this.value);
+        //this.parent.bridge.postLog(this.value);
         if (this.value.isSequence) {
             let res = '';
             for (let i = 0; i < this.value.programs.length; i++) {
@@ -1139,7 +1172,7 @@ class ObjectField {
         if (this.value === null || this.value === undefined) return;
         const definedProgram = jotacode.isProgram;
         while (jotacode.isProgram) {
-            //console.log(jotacode);
+            //this.parent.bridge.postLog(jotacode);
             jotacode = (
                 context.bridge.a_execute(jotacode)
             ).execute(context);
@@ -1152,7 +1185,7 @@ class ObjectField {
             }
             jotacode = convertData(jotacode);
         }
-        //console.log(jotacode);
+        //this.parent.bridge.postLog(jotacode);
         return String(jotacode);
     }
 
@@ -1184,9 +1217,14 @@ class ObjectField {
                 res = '@lock #' + String(this.parent.dbref) + '=';
                 break;
             default:
-                res = '@ofail #' + String(this.parent.dbref) +
+                res = '@field #' + String(this.parent.dbref) +
                     '=' + this.fieldName + ':';
                 break;
+        }
+
+        if (this.parent.doNotCompile) {
+            // Forcefully return the source code
+            return res + this.sourceCode;
         }
 
         if (this.value.isSequence) {
@@ -1269,6 +1307,36 @@ class JotaBridge {
         this.outputItem._setField('run', "Hello world!");
         this.printMessages = [];
         this.localScope = null;
+
+        this.socket = null;
+        this.builtForNetwork = false;
+        this.readyToSendOverNetwork = false;
+        this.backupMessageQueue = [];
+    }
+
+    isConnectedToBridge() {
+        return this.socket && this.socket.connected;
+    }
+
+    postLog(msg) {
+        if (this.builtForNetwork) {
+            const msgList = msg.split('\n');
+            for (let i = 0; i < msgList.length; i++) {
+                const subMsg = msgList[i];
+                if (this.readyToSendOverNetwork && this.isConnectedToBridge()) {
+                    this.socket.emit('forwardToClient', {
+                        header: 'simLog',
+                        data: subMsg
+                    });
+                }
+                else {
+                    this.backupMessageQueue.push(subMsg);
+                }
+            }
+        }
+        else {
+            console.log(msg);
+        }
     }
 
     registerThing(vocab, dbref, owner, location=null) {
@@ -1355,6 +1423,9 @@ class JotaBridge {
     }
 
     // Shorthand for init() declarations
+    // localScope is the object reference being initialized.
+    // It is necessary to use this to quickly access from init()
+    // chains before the object is finalized.
     ls() {
         this.checkLocalScope();
         return this.localScope;
@@ -1418,6 +1489,298 @@ class JotaBridge {
         return this.localScope.setArray(arrayName, indexProgram, value);
     }
 
+    // Jotacode parsing
+    //TODO: We can use this to allow for procedural code execution
+    createFieldArchive(jotacodeString) {
+        const encasementTracker = {
+            stack: [],
+            inString: function() {
+                if (this.stack.length === 0) return false;
+                switch (this.peek()) {
+                    case "'":
+                    case '"':
+                        return true;
+                }
+                return false;
+            },
+            peek: function() {
+                if (this.stack.length === 0) return '';
+                return this.stack[this.stack.length - 1];
+            },
+            push: function(opener) {
+                this.stack.push(opener);
+            },
+            pop: function() {
+                this.stack.pop();
+            },
+            closer: function() {
+                switch (this.peek()) {
+                    case '(':
+                        return ')';
+                    case '{':
+                        return "}";
+                    case "'":
+                        return "'";
+                    case '"':
+                        return '"';
+                }
+                return '';
+            }
+        }
+        return {
+            isFieldArchive: true,
+            jotacode: jotacodeString,
+            jotascript: this.unpackJotacode(jotacodeString, encasementTracker, 0)
+        };
+    }
+
+    // Check to see if this is a correctly-encapsulated string
+    // from jotacode source code
+    isJotacodeString(jotacodeString) {
+        jotacodeString = jotacodeString.trim();
+        if ((typeof jotacodeString) != 'string') return false; // Haha, no
+
+        if (!(
+            (jotacodeString.startsWith('"') && jotacodeString.endsWith('"')) ||
+            (jotacodeString.startsWith("'") && jotacodeString.endsWith("'"))
+        )) {
+            return false; // Not a chance.
+        }
+
+        const closer = jotacodeString[0];
+        for (let i = 1; i < jotacodeString.length - 1; i++) {
+            const c = jotacodeString[i];
+            if (c === '\\') {
+                // Escape
+                i++;
+                continue;
+            }
+            if (c === closer) {
+                return false; // Formatted string closes in the middle
+            }
+        }
+
+        return true;
+    }
+
+    unpackJotacode(jotacodeString, encasementTracker, startLevel) {
+        if (this.isJotacodeString(jotacodeString)) {
+            return jotacodeString;
+        }
+        
+        // Is this a number?
+        const parsed = preferNumber(jotacodeString.trim());
+        if ((typeof parsed) === 'number') return jotacodeString;
+
+        // Nope, this is something we gotta parse...
+        const levelSeparator = (startLevel > 0) ? ',' : ';';
+        const subTree = {
+            isSubTree: true,
+            level: startLevel,
+            chunks: []
+        }
+        let buffer = "";
+        let level = startLevel;
+
+        for (let i = 0; i < jotacodeString.length; i++) {
+            const c = jotacodeString[i];
+            const inString = encasementTracker.inString();
+            const closer = encasementTracker.closer();
+
+            // Do not add needless whitespace
+            if (!inString && c === ' ') continue;
+
+            buffer += c;
+            
+            if (c === closer) {
+                level--;
+                if (level === startLevel) {
+                    if (inString && buffer.length > 0) {
+                        subTree.chunks.push(
+                            this.unpackJotacode(
+                                buffer, encasementTracker, 
+                                startLevel + 1
+                            )
+                        );
+                        buffer = "";
+                    }
+                    if (!inString && buffer.length > 1) {
+                        buffer = buffer.substring(0, buffer.length - 1);
+                        subTree.chunks.push(
+                            this.unpackJotacode(
+                                buffer, encasementTracker, 
+                                startLevel + 1
+                            )
+                        );
+                        subTree.chunks.push(c);
+                        buffer = "";
+                    }
+                }
+                encasementTracker.pop();
+            }
+            else if (inString) {
+                if (c === '\\' && i < jotacodeString.length - 1) {
+                    // Escape whatever comes next
+                    buffer += jotacodeString[i+1];
+                    i++;
+                    continue;
+                }
+            }
+            else if (c === '(' || c === '{') {
+                if (level === startLevel && buffer.length > 0) {
+                    subTree.chunks.push(buffer);
+                    buffer = "";
+                }
+                encasementTracker.push(c);
+                level++;
+            }
+            else if (c === '"' || c === "'") {
+                if (level === startLevel && buffer.length > 1) {
+                    buffer = buffer.substring(0, buffer.length - 1);
+                    subTree.chunks.push(buffer);
+                    buffer = "";
+                }
+                encasementTracker.push(c);
+                level++;
+            }
+            else if (c === levelSeparator && level === startLevel) {
+                if (buffer.length > 1) {
+                    buffer = buffer.substring(0, buffer.length - 1);
+                    subTree.chunks.push(
+                        this.unpackJotacode(
+                            buffer, encasementTracker,
+                            startLevel + 1
+                        )
+                    );
+                }
+                subTree.chunks.push(c);
+                buffer = "";
+            }
+        }
+
+        // Add stub
+        if (buffer.length > 0) {
+            subTree.chunks.push(buffer);
+        }
+
+        // Sanity check
+        if (level > startLevel) {
+            throw new Error(
+                "ERROR: Something about this jotacode broke "+
+                "the parser at level " + startLevel +
+                " (arrived at " + level + "):\n"+jotacodeString
+            );
+        }
+
+        // Return simple data
+        if (subTree.chunks.length === 0) return "";
+        if (subTree.chunks.length === 1) {
+            return String(convertData(subTree.chunks[0]));
+        }
+
+        // Use this info
+        if (startLevel === 0) {
+            return this.traverseParsedTree(subTree);
+        }
+
+        // Return subtree
+        return subTree;
+    }
+
+    // Parse chunk tree into programs, sequences, and arguments.
+    traverseParsedTree(subTree, buildingSequence=false) {
+        const rankedTree = [];
+        let programOpen = false;
+        let programName = '';
+        let programArguments = [];
+        let armSequence = false;
+        for (let i = 0; i < subTree.chunks.length; i++) {
+            let chunk = subTree.chunks[i];
+            if ((typeof chunk) === 'string') chunk = chunk.trim();
+
+            if (programOpen) {
+                if (chunk.isSubTree) {
+                    const series = this.traverseParsedTree(chunk, armSequence);
+                    if (Array.isArray(series)) {
+                        for (let j = 0; j < series.length; j++) {
+                            programArguments.push(series[j]);
+                        }
+                    }
+                    else {
+                        programArguments.push(series);
+                    }
+                }
+                else if (chunk === ')') {
+                    programOpen = false;
+                    const creationMethodName = 'a_' + programName.toLowerCase();
+                    const createdProgram = this[creationMethodName](...programArguments);
+                    rankedTree.push(createdProgram);
+                }
+                else if (chunk === ';') {
+                    throw new Error(
+                        "ERROR: Cannot use semicolon in program arguments!"
+                    );
+                }
+                else if (chunk === ',') {
+                    // next argument...
+                }
+                else if (chunk === '{') {
+                    armSequence = true;
+                }
+                else if (chunk === '}') {
+                    armSequence = false;
+                }
+                else if (this.isJotacodeString(chunk)) {
+                    programArguments.push(chunk.substring(1, chunk.length - 1));
+                }
+                else {
+                    programArguments.push(chunk);
+                }
+            }
+            else {
+                if (chunk.isSubTree) {
+                    const series = this.traverseParsedTree(chunk, armSequence);
+                    if (Array.isArray(series)) {
+                        throw new Error(
+                            "ERROR: subTree was traversed, "+
+                            "an array came back, and we are not "+
+                            "collecting arguments for a program!"
+                        );
+                    }
+                    rankedTree.push(series);
+                }
+                else if (chunk.startsWith('@')) {
+                    programOpen = true;
+                    programName = chunk.substring(1, chunk.length - 1);
+                    programArguments = [];
+                }
+                else if (chunk === ';') {
+                    buildingSequence = true;
+                }
+                else if (chunk === ',') {
+                    // next argument...
+                }
+                else if (chunk === '{') {
+                    armSequence = true;
+                }
+                else if (chunk === '}') {
+                    armSequence = false;
+                }
+                else if (this.isJotacodeString(chunk)) {
+                    rankedTree.push(chunk.substring(1, chunk.length - 1));
+                }
+                else {
+                    rankedTree.push(chunk);
+                }
+            }
+        }
+
+        if (buildingSequence) return new Sequence(rankedTree);
+        if (rankedTree.length === 1) return rankedTree[0];
+        return rankedTree;
+    }
+
+    // Substitution logic
     createSubstitutionPair(key, value) {
         return {
             key: key,
@@ -1529,12 +1892,12 @@ class JotaBridge {
                     );
                 }
 
-                //console.log("  " + str);
+                //this.postLog("  " + str);
                 //for (let i = this.registeredSubstitutions.length - 1; i >= 0; i--) {
                 for (let i = 0; i < this.registeredSubstitutions.length; i++) {
                     const pair = this.registeredSubstitutions[i];
-                    //console.log("\n" + pair.key + " -> " + pair.value);
-                    //console.log("Pair: " + pair.depth + " < Context: " + context.depth);
+                    //this.postLog("\n" + pair.key + " -> " + pair.value);
+                    //this.postLog("Pair: " + pair.depth + " < Context: " + context.depth);
                     if (pair.depth < context.depth) continue;
                     // Only allow a program to be a direct
                     // replacement if it's a perfect match.
@@ -2411,7 +2774,7 @@ class JotaBridge {
             );
             const fieldName = String(reduceArg(context, args[1]));
 
-            //console.log(fieldParent._getField(fieldName));
+            //this.postLog(fieldParent._getField(fieldName));
 
             return fieldParent._getField(fieldName);
         }, args);
@@ -2654,7 +3017,7 @@ class JotaBridge {
                 if (item.matchesName(name)) return item.dbref;
             }
 
-            console.log(
+            this.postLog(
                 "WARNING: No object in " + loc._getShortName() +
                 " by name: " + name
             );
@@ -2693,7 +3056,7 @@ class JotaBridge {
                 if (item.matchesName(name)) return item.dbref;
             }
 
-            console.log(
+            this.postLog(
                 "WARNING: No exit in " + loc._getShortName() +
                 " by name: " + name
             );
@@ -3292,7 +3655,7 @@ class JotaBridge {
 
     getCompilation(commandSeparator='%;', wrappedSemicolon=';') {
         const testContext = this.createTestContext();
-        let res = '\n# COMPILATION RESULTS';
+        let res = '';
         for (let i = 0; i < this.registeredObjects.length; i++) {
             const obj = this.registeredObjects[i];
             if (obj.dbref <= 0) continue;
@@ -3328,7 +3691,7 @@ class JotaBridge {
             }
         }
 
-        return res;
+        return res.trim();
     }
 
     wrapSemicolons(str, wrappedSemicolon) {
@@ -3337,22 +3700,69 @@ class JotaBridge {
         return str.replace(semicolonRegEx, wrappedSemicolon);
     }
 
+    networkStart() {
+        this.backupMessageQueue = [];
+        this.builtForNetwork = true;
+        this.readyToSendOverNetwork = false;
+        this.socket = null;
+    }
+
+    networkFinish(lowerCompiledContent) {
+        //TODO: Get a better compile formatter
+        let bulkCompile = this.getCompilation('\n', ';');
+        if (lowerCompiledContent) {
+            //TODO: Attach compiled code that did not require jotascript
+            //      to bulkCompile.
+        }
+        this.socket = io("http://localhost:4100");
+        this.socket.on("connect", () => {
+            this.socket.emit('selfIdentify', 'sim-client');
+        });
+        this.socket.on("disconnect", () => {
+            this.readyToSendOverNetwork = false;
+            console.log('Sim is exiting...');
+            process.exit();
+        });
+        this.socket.on("clientRequest", (msg) => {
+            if (msg === 'getBackupMessages') {
+                this.readyToSendOverNetwork = true;
+                while (this.backupMessageQueue.length > 0) {
+                    this.postLog(this.backupMessageQueue.shift());
+                }
+            }
+            else if (msg === 'latestCompile') {
+                this.socket.emit('forwardToClient', {
+                    header: 'latestCompile',
+                    data: bulkCompile
+                });
+            }
+            else if (msg === 'shutdown') {
+                this.socket.disconnect();
+            }
+        });
+    }
+
     finish(runResult=true, condense=true, commandSeparator='%;', wrappedSemicolon=';') {
+        this.builtForNetwork = false;
         if (!condense) {
             commandSeparator='\n';
         }
-        console.log(this.getCompilation(commandSeparator, wrappedSemicolon));
+        this.postLog('\n# COMPILATION RESULTS\n');
+        this.postLog(this.getCompilation(commandSeparator, wrappedSemicolon));
 
         if (runResult) {
-            console.log('\n# EMULATOR RUNNING...\n');
+            this.postLog('\n# EMULATOR RUNNING...\n');
             this.runEmulator();
         }
     }
 
+    //TODO: Network-driven emulator functionality.
+    // Probably just need to separate some stuff out.
+
     runEmulator() {
         const verblist = this.createStandardVerbList();
 
-        console.log(
+        this.postLog(
             'Use...' +
             '\n    $playername' +
             '\n...to take control of a player character.' +
@@ -3361,7 +3771,7 @@ class JotaBridge {
         for (let i = 0; i < this.registeredObjects.length; i++) {
             const player = this.registeredObjects[i];
             if (!player.isPlayer) continue;
-            console.log('    ' + player._getShortName());
+            this.postLog('    ' + player._getShortName());
         }
 
         let playerInput = '';
@@ -3373,9 +3783,9 @@ class JotaBridge {
         do {
             const agentName = (currentAgent ?
                 currentAgent._getShortName() : '(untethered)');
-            console.log('');
+            this.postLog('');
             playerInput = prompt(agentName + '> ').trim().toLowerCase();
-            console.log('');
+            this.postLog('');
 
             if (playerInput.startsWith('$')) {
                 const nextAgentName = playerInput.substring(1);
@@ -3387,7 +3797,7 @@ class JotaBridge {
                     const playerName = player._getShortName();
                     if (playerName.toLowerCase() != nextAgentName) continue;
                     currentAgent = player;
-                    console.log('Switching to ' + playerName + '...\n');
+                    this.postLog('Switching to ' + playerName + '...\n');
                     agentFound = true;
 
                     this.doLookAround(currentAgent);
@@ -3395,14 +3805,14 @@ class JotaBridge {
                 }
 
                 if (!agentFound) {
-                    console.log(
+                    this.postLog(
                         'No player character found with name "' +
                         nextAgentName + '"'
                     );
                 }
             }
             else if (playerInput.startsWith('@')) {
-                console.log('Invalid command.');
+                this.postLog('Invalid command.');
                 if (!seenInvalidCommandMsg) {
                     seenInvalidCommandMsg = true;
                     this.showInvalidCommandMessage();
@@ -3412,7 +3822,7 @@ class JotaBridge {
                 break;
             }
             else if (!currentAgent) {
-                console.log('You need to control a player character first.');
+                this.postLog('You need to control a player character first.');
             }
             else {
                 let understood = false;
@@ -3430,7 +3840,7 @@ class JotaBridge {
                 }
 
                 if (!understood) {
-                    console.log('Invalid command.');
+                    this.postLog('Invalid command.');
                     if (!seenInvalidCommandMsg) {
                         seenInvalidCommandMsg = true;
                         this.showInvalidCommandMessage();
@@ -3443,11 +3853,11 @@ class JotaBridge {
             }
         } while(playerInput != 'quit');
 
-        console.log('# EMULATOR HAS CLOSED.\n');
+        this.postLog('# EMULATOR HAS CLOSED.\n');
     }
 
     showInvalidCommandMessage() {
-        console.log(
+        this.postLog(
             'NOTE: This is not meant to be an exhaustive ' +
             'recreation of ifMUD. Not all commands have ' +
             'been implemented.'
@@ -3493,16 +3903,16 @@ class JotaBridge {
             (agent, tokens, front, middle, end) => {
                 const obj = agent.bridge.matchPhraseToObject(agent, front);
                 if (obj === undefined) {
-                    console.log('You don\'t see that here.');
+                    this.postLog('You don\'t see that here.');
                     return;
                 }
 
                 const desc = obj._getField('description');
                 if (desc && desc.length > 0) {
-                    console.log(desc);
+                    this.postLog(desc);
                 }
                 else {
-                    console.log(
+                    this.postLog(
                         'You see nothing special about ' +
                         obj._getShortName() + '.'
                     );
@@ -3519,17 +3929,17 @@ class JotaBridge {
             (agent, tokens, front, middle, end) => {
                 const obj = agent.bridge.matchPhraseToObject(agent, front);
                 if (obj === undefined) {
-                    console.log('You don\'t see that here.');
+                    this.postLog('You don\'t see that here.');
                     return;
                 }
 
                 if (!obj.isObject) {
-                    console.log('You cannot take that.');
+                    this.postLog('You cannot take that.');
                     return;
                 }
 
                 if (obj.location === agent) {
-                    console.log('You already have that.');
+                    this.postLog('You already have that.');
                     return;
                 }
 
@@ -3540,14 +3950,14 @@ class JotaBridge {
                 if (!obj.passesLock(agent)) {
                     const hasResponse = obj.doFieldPair(context, 'fail');
                     if (!hasResponse) {
-                        console.log('You cannot take that.');
+                        this.postLog('You cannot take that.');
                     }
                     return;
                 }
                 
                 const hasResponse = obj.doFieldPair(context, 'success');
                 if (!hasResponse) {
-                    console.log('You take ' + obj._getShortName() + '.');
+                    this.postLog('You take ' + obj._getShortName() + '.');
                 }
 
                 obj.location = agent;
@@ -3561,12 +3971,12 @@ class JotaBridge {
             (agent, tokens, front, middle, end) => {
                 const obj = agent.bridge.matchPhraseToObject(agent, front);
                 if (obj === undefined) {
-                    console.log('You don\'t see that here.');
+                    this.postLog('You don\'t see that here.');
                     return;
                 }
 
                 if (obj.location != agent) {
-                    console.log('You are not holdling that.');
+                    this.postLog('You are not holdling that.');
                     return;
                 }
 
@@ -3576,7 +3986,7 @@ class JotaBridge {
                 
                 const hasResponse = obj.doFieldPair(context, 'drop');
                 if (!hasResponse) {
-                    console.log('You drop ' + obj._getShortName() + '.');
+                    this.postLog('You drop ' + obj._getShortName() + '.');
                 }
 
                 obj.location = agent.location;
@@ -3604,7 +4014,7 @@ class JotaBridge {
 
                 res += '.';
 
-                console.log(res);
+                this.postLog(res);
             }
         ));
 
@@ -3625,13 +4035,13 @@ class JotaBridge {
     }
 
     doLookAround(agent) {
-        console.log('//// ' + agent.location._getShortName());
+        this.postLog('//// ' + agent.location._getShortName());
         const desc = agent.location._getField('description');
         if (desc && desc.length > 0) {
-            console.log(desc);
+            this.postLog(desc);
         }
         else {
-            console.log(
+            this.postLog(
                 'You see nothing special about ' +
                 agent.location._getShortName() + '.'
             );
@@ -3649,23 +4059,23 @@ class JotaBridge {
             else if (obj.isExit) exitList.push(obj);
         }
 
-        console.log('');
+        this.postLog('');
 
         if (playerList.length > 0) {
-            console.log(
+            this.postLog(
                 'Players: ' +
                 this.createList(agent, playerList)
             );
         }
 
         if (objectList.length > 0) {
-            console.log(
+            this.postLog(
                 'You can see: ' +
                 this.createList(agent, playerList)
             );
         }
 
-        console.log(
+        this.postLog(
             'Exits: ' +
             this.createList(agent, exitList, 'none')
         );

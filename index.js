@@ -1,4 +1,4 @@
-const JT = require("jotascript").createBridge();
+const JT = require("./jotascript").createBridge();
 
 const inventor = JT.registerPlayer('inventor', 29923);
 const gameCodeRoom = JT.registerRoom('Game Code Room', 29976, inventor);

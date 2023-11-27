@@ -1,4 +1,5 @@
 const JT = require("./jotascript").createBridge();
+JT.networkStart();
 
 const inventor = JT.registerPlayer('inventor', 29923);
 const apartment = JT.registerRoom('Apartment', 29924, inventor);
@@ -82,29 +83,4 @@ smartphone.outputField(testContext, 'testfunc');
     smartphone._compileField(testContext, 'testfunc')
 );*/
 
-const parsedCode = JT.createFieldArchive(
-    '@let("foo","%{bar}!",@countloop(10,"bar",@print("%{foo}"," ","%{bar}")))'
-);
-JT.output(parsedCode.jotascript);
-
-const combineTest = JT.a_countloop(5,"mx",
-    JT.a_execute(JT.a_print('@print("Hello ",', '"WORLD!!%{mx}")'))
-);
-JT.output(combineTest);
-JT.postLog(
-    combineTest.compile(testContext, true)
-);
-
-const feedbackTest = JT.a_countloop(5,"mx",JT.a_execute(JT.a_print(
-    "@countloop(%{mx},\"cx\",@print(\"%{cx}\"))"
-)));
-JT.output(feedbackTest);
-JT.postLog(
-    feedbackTest.compile(testContext, true)
-);
-
-const legacyThing = JT.registerThing('legacy thing', 40000, inventor, apartment);
-legacyThing.init(true)
-.setField('testfuncsrc', '@print("oh hai.")');
-
-JT.finish(false, false);
+JT.networkFinish()
